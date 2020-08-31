@@ -1,5 +1,5 @@
 resource "aws_iam_role" "replication" {
-  name = "s3-bucket-replication-${random_pet.this.id}"
+  name = "s3-bucket-replication-${local.destination_bucket_name}"
 
   assume_role_policy = <<POLICY
 {
@@ -19,7 +19,7 @@ POLICY
 }
 
 resource "aws_iam_policy" "replication" {
-  name = "s3-bucket-replication-${random_pet.this.id}"
+  name = "s3-bucket-replication-${local.destination_bucket_name}"
 
   policy = <<POLICY
 {
@@ -72,7 +72,7 @@ POLICY
 }
 
 resource "aws_iam_policy_attachment" "replication" {
-  name       = "s3-bucket-replication-${random_pet.this.id}"
+  name       = "s3-bucket-replication-${local.destination_bucket_name}"
   roles      = [aws_iam_role.replication.name]
   policy_arn = aws_iam_policy.replication.arn
 }
