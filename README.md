@@ -1,4 +1,5 @@
-# S3 bucket with Cross-Region Replication (CRR) enabled
+# S3 bucket with Cross-Region Replication (CRR); lifecycle rules; server side encryption ; static website hosting ; Cross-origin-resoutce-sharing rules (CORS) ; and versioning enabled.
+# CloudFront WEB Distribution enabled.
 
 Configuration in this directory creates S3 bucket in one region and configures CRR to another bucket in another region.
 
