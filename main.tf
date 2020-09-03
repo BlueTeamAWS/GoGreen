@@ -1,3 +1,4 @@
+
 # main.tf
 
 terraform {
@@ -7,75 +8,97 @@ terraform {
     encrypt = true
     bucket  = "gogreen-3tier-tf-state"
     region  = "us-west-2"
-    key     = "terraform/state/gogreen3tier.tfstate"
+    key     = "terraform/state/gogreencdn.tfstate"
   }
 }
+
+
 
 locals {
   bucket_name             = "origin-s3-bucket-gogreen"
   destination_bucket_name = "replica-s3-bucket-gogreen"
-  origin_region           = "eu-west-1" # Ireland
-  replica_region          = "sa-east-1" # Sao Paulo
+  origin_region           = "us-east-1"
+  replica_region          = "us-west-1"
 }
+
 provider "aws" {
   region = local.origin_region
+
 }
+
 provider "aws" {
   region = local.replica_region
-  alias  = "replica"
+
+  alias = "replica"
 }
+
 data "aws_caller_identity" "current" {}
 
+
+
 resource "aws_kms_key" "replica" {
-  provider                = aws.replica
+  provider = aws.replica
+
   description             = "S3 bucket replication KMS key"
   deletion_window_in_days = 7
 }
+
 module "log_bucket" {
-  source                         = "github.com/terraform-aws-modules/terraform-aws-s3-bucket?ref=v1.9.0"
-  bucket                         = "logs-${local.bucket_name}"
+  source = "git@github.com:terraform-aws-modules/terraform-aws-s3-bucket"
+
+  bucket                         = "logs-gogreen"
   acl                            = "log-delivery-write"
   force_destroy                  = true
   attach_elb_log_delivery_policy = true
 }
 module "replica_bucket" {
-  source = "github.com/terraform-aws-modules/terraform-aws-s3-bucket?ref=v1.9.0"
+  source = "git@github.com:terraform-aws-modules/terraform-aws-s3-bucket"
+
   providers = {
     aws = "aws.replica"
   }
+
   bucket = local.destination_bucket_name
-  region = local.replica_region
   acl    = "private"
+
   versioning = {
     enabled = true
   }
 }
+
 module "s3_bucket" {
-  source = "github.com/terraform-aws-modules/terraform-aws-s3-bucket?ref=v1.9.0"
+  source = "git@github.com:terraform-aws-modules/terraform-aws-s3-bucket"
+
   bucket = local.bucket_name
-  region = local.origin_region
   acl    = "private"
+ 
+
   versioning = {
     enabled = true
   }
+
   replication_configuration = {
     role = aws_iam_role.replication.arn
+
     rules = [
       {
         id       = "foo"
         status   = "Enabled"
         priority = 10
+
         source_selection_criteria = {
           sse_kms_encrypted_objects = {
             enabled = true
           }
         }
+
         filter = {
           prefix = "one"
           tags = {
             ReplicateMe = "Yes"
           }
         }
+
         destination = {
           bucket             = "arn:aws:s3:::${local.destination_bucket_name}"
           storage_class      = "STANDARD"
@@ -90,20 +113,24 @@ module "s3_bucket" {
         id       = "bar"
         status   = "Enabled"
         priority = 20
+
         destination = {
           bucket        = "arn:aws:s3:::${local.destination_bucket_name}"
           storage_class = "STANDARD"
         }
+
+
         filter = {
           prefix = "two"
           tags = {
             ReplicateMe = "Yes"
           }
         }
+
       },
+
     ]
   }
-
   website = {
     index_document = "index.html"
     error_document = "error.html"
@@ -122,6 +149,7 @@ module "s3_bucket" {
     target_bucket = module.log_bucket.this_s3_bucket_id
     target_prefix = "log/"
   }
+
   cors_rule = [
     {
       allowed_methods = ["PUT", "POST"]
@@ -194,28 +222,111 @@ module "s3_bucket" {
     },
   ]
 
+
   server_side_encryption_configuration = {
     rule = {
       apply_server_side_encryption_by_default = {
-        kms_master_key_id = aws_kms_key.objects.arn
+        kms_master_key_id = aws_kms_key.replica.arn
         sse_algorithm     = "aws:kms"
       }
     }
   }
 
-  object_lock_configuration = {
-    object_lock_enabled = "Enabled"
-    rule = {
-      default_retention = {
-        mode  = "COMPLIANCE"
-        years = 5
-      }
-    }
-  }
 
   // S3 bucket-level Public Access Block configuration
   block_public_acls       = true
   block_public_policy     = true
   ignore_public_acls      = true
   restrict_public_buckets = true
+
+}
+
+
+# --------------------------------------------------------------------------
+# Creating Origin Access Identity for CloudFront 
+# --------------------------------------------------------------------------
+
+resource "aws_cloudfront_origin_access_identity" "origin_access_identity" {
+  comment = "Some comment"
+}
+resource "aws_cloudfront_distribution" "s3_distribution_task" {
+  origin {
+    domain_name = module.s3_bucket.this_s3_bucket_bucket_regional_domain_name
+    origin_id   = module.s3_bucket.this_s3_bucket_id
+    s3_origin_config {
+
+      # origin_access_identity = "origin-access-identity/cloudfront/ABCDEFG1234567"
+      origin_access_identity = aws_cloudfront_origin_access_identity.origin_access_identity.cloudfront_access_identity_path
+    }
+  }
+  enabled         = true
+  is_ipv6_enabled = true
+  comment         = "GoGreen web ditribution"
+  default_cache_behavior {
+    allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+    cached_methods   = ["GET", "HEAD"]
+    target_origin_id = module.s3_bucket.this_s3_bucket_id
+    forwarded_values {
+      query_string = false
+      cookies {
+        forward = "none"
+      }
+    }
+    viewer_protocol_policy = "allow-all"
+    min_ttl                = 0
+    default_ttl            = 3600
+    max_ttl                = 86400
+  }
+  # Cache behavior with precedence 0
+  ordered_cache_behavior {
+    path_pattern     = "/content/immutable/*"
+    allowed_methods  = ["GET", "HEAD", "OPTIONS"]
+    cached_methods   = ["GET", "HEAD", "OPTIONS"]
+    target_origin_id = module.s3_bucket.this_s3_bucket_id
+    forwarded_values {
+      query_string = false
+      headers      = ["Origin"]
+      cookies {
+        forward = "none"
+      }
+    }
+    min_ttl                = 0
+    default_ttl            = 86400
+    max_ttl                = 3156000
+    compress               = true
+    viewer_protocol_policy = "redirect-to-https"
+  }
+  price_class = "PriceClass_200"
+  restrictions {
+    geo_restriction {
+      restriction_type = "blacklist"
+      locations        = ["CA"]
+    }
+  }
+  tags = {
+    Environment = "test"
+  }
+  viewer_certificate {
+    cloudfront_default_certificate = true
+  }
+  retain_on_delete = true
+}
+
+# ---------------------------------------------------------------------------------
+# Create AWS Bucket Policy for CloudFront
+# ---------------------------------------------------------------------------------
+data "aws_iam_policy_document" "s3_policy" {
+  statement {
+    actions   = ["s3:GetObject"]
+    resources = ["${module.s3_bucket.this_s3_bucket_arn}/*"]
+    principals {
+      type        = "AWS"
+      identifiers = ["${aws_cloudfront_origin_access_identity.origin_access_identity.iam_arn}"]
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "s3BucketPolicy" {
+  bucket = module.s3_bucket.this_s3_bucket_id
+  policy = data.aws_iam_policy_document.s3_policy.json
 }
